@@ -1,9 +1,17 @@
-//#include <algorithm>
 #include <stdio.h>
 #include <openssl/bn.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <openssl/aes.h>
+#if defined(_WIN32) || defined(_WIN64)
+    #include <windows.h>
+    #define doSleep(x) Sleep(x);
+
+#elif defined(__linux__)
+    #include <unistd.h>
+    #define doSleep(x) usleep(x*1000); 
+
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include "baseP.h"
@@ -71,9 +79,36 @@ void hexStringToUCharArr(unsigned char *hexString, unsigned char *output, unsign
 
 
 int main() {
+
+    char *startLogo =        
+            "  / __ \\      (_)    | |                    \n"
+            " | |  | |_   _ _  ___| | __                 \n"
+            " | |  | | | | | |/ __| |/ /                 \n"
+            " | |__| | |_| | | (__|   <                  \n"
+            "  \\___\\_\\\\__,_|_|\\___|_|\\_\\   ______  _____ \n"
+            " |  __ \\| |  | |        /\\   |  ____|/ ____|\n"
+            " | |  | | |__| |______ /  \\  | |__  | (___  \n"
+            " | |  | |  __  |______/ /\\ \\ |  __|  \\___ \\ \n"
+            " | |__| | |  | |     / ____ \\| |____ ____) |\n"
+            " |_____/|_|  |_|____/_/    \\_\\______|_____/ \n"
+            "  / ____| |    |_   _|                      \n"
+            " | |    | |      | |                        \n"
+            " | |    | |      | |                        \n"
+            " | |____| |____ _| |_                       \n"
+            "  \\_____|______|_____|                      \n";
+
+    // START LOGO ANIMATION
+    printf("\n\n");
+    for (int i = 0; i < strlen(startLogo); i++) {
+        printf("%c", startLogo[i]);
+        doSleep(1);
+    }
+    printf("\n\n");
+
+
     // GENERATE RANDOM PRIVATE KEY
     unsigned char privateKey[256];
-    RAND_bytes(privateKey, 256);
+    RAND_bytes(privateKey, sizeof(privateKey));
 
     // PRINT PRIVATE KEY
     printf("\nYour k (Private Key): ");
@@ -154,9 +189,13 @@ int main() {
     while (1) {
 
         // GET OPERATION
-        char op;
+        char op = '\0';
         printf(" -=> Send or receive message? (s = send | r = receive): ");
         scanf(" %c", &op);
+
+        // CLEAR REST OF LINE FROM INPUT BUFFER
+        int ch;
+        while ((ch = getchar()) != '\n' && ch != EOF);
 
         if (op == 's') {
 
@@ -166,11 +205,11 @@ int main() {
 
 
             // CREATE MESSAGE BUFFER
-            unsigned char messageBuff[4096];
+            unsigned char messageBuff[4097];
 
             // GET MESSAGE UNTIL NEWLINE
             printf("\n    > Enter your message: ");
-            scanf(" %[^\n]", messageBuff);
+            scanf(" %4096[^\n]", messageBuff);
             getchar();
             
 
@@ -192,20 +231,42 @@ int main() {
             RAND_bytes((unsigned char *)message+messageLen+1, blockSize-(messageLen+1));
 
 
+            // CREATE HMAC HASH
+            char messageHash[SHA256_DIGEST_LENGTH];
+
+            SHA256(message, messageLen, messageHash);
+
+            char secretMessageMix[SHA256_DIGEST_LENGTH];
+
+            for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+                secretMessageMix[i] = (messageHash[i] ^ secretHash[i]);
+            }
+
+            char hmacHash[SHA256_DIGEST_LENGTH];
+
+            SHA256(secretMessageMix, SHA256_DIGEST_LENGTH, hmacHash);
+
+
+
+
             // GENERATE RANDOM IV
             unsigned char iv[16];
 
             RAND_bytes(iv, 16);
 
             // ALLOCATE 16 BYTES FOR IV IN CIPHERTEXT AND CREATE CIPHERTEXT OBJECT IN MEMORY
-            unsigned int ciphertextSize = 16 + blockSize;
+            unsigned int ciphertextSize = /*HMAC*/ 16 + /*IV*/ 16 + blockSize;
 
             unsigned char *ciphertext = malloc(ciphertextSize);
             
             if (ciphertext == NULL) {printf("Malloc Fail While Sending Message\n"); return -1;}
 
-            // COPY IV INTO START OF CIPHER TEXT
-            memcpy(ciphertext, iv, 16);
+
+            // COPY HMAC INTO START OF CIPHER TEXT
+            memcpy(ciphertext, hmacHash, 16);
+
+            // COPY IV INTO CIPHER TEXT
+            memcpy(ciphertext+16, iv, 16);
 
 
             // CALCULATE ENCRYPTION KEY FROM HASH(SECRET)
@@ -215,7 +276,7 @@ int main() {
 
 
             // ENCRYPT
-            AES_cbc_encrypt((const unsigned char *) message, ciphertext+16, blockSize, &enc_key, iv, AES_ENCRYPT);
+            AES_cbc_encrypt((const unsigned char *) message, ciphertext+16+16, blockSize, &enc_key, iv, AES_ENCRYPT);
 
 
             // PRINT CIPHER TEXT
@@ -224,14 +285,19 @@ int main() {
             printf("\n");
 
 
+
         } else if (op == 'r') {
 
+            //
+            // DECRYPTION OPERATION
+            //
+
             // ALLOCATE CIPHERTEXT HEX INPUT BUFFER
-            unsigned char ciphertextHEXBuff[8192];
+            unsigned char ciphertextHEXBuff[8193];
 
             // GET CIPHER TEXT
             printf("\n    > Enter cipher text: ");
-            scanf(" %[^\n]", ciphertextHEXBuff);
+            scanf(" %8192[^\n]", ciphertextHEXBuff);
             getchar();
 
 
@@ -251,21 +317,21 @@ int main() {
 
 
                 // COPY ACTUAL CIPHERTEXT INTO CIPHERTEXT OBJECT
-                unsigned char *ciphertext = malloc(ciphertextLen-16);
+                unsigned char *ciphertext = malloc(ciphertextLen-16-16);
 
                 if (ciphertext == NULL) {printf("Malloc Fail While Receiving Message\n"); return -1;}
 
-                memcpy(ciphertext, ciphertextBuff+16, ciphertextLen-16);
+                memcpy(ciphertext, ciphertextBuff+16+16, ciphertextLen-16-16);
 
 
                 // COPY IV FROM CIPHERTEXTBUFF
                 unsigned char iv[16];
 
-                memcpy(iv, ciphertextBuff, 16);
+                memcpy(iv, ciphertextBuff+16, 16);
                 
 
                 // CREATE DECRYPTED OBJECT
-                unsigned char *decrypted = malloc(ciphertextLen-16);
+                unsigned char *decrypted = malloc(ciphertextLen-16-16);
 
                 if (decrypted == NULL) {printf("Malloc Fail While Receiving Message\n"); return -1;}
 
@@ -277,10 +343,36 @@ int main() {
 
 
                 // DECRYPT
-                AES_cbc_encrypt(ciphertext, decrypted, ciphertextLen-16, &dec_key, iv, AES_DECRYPT);
+                AES_cbc_encrypt(ciphertext, decrypted, ciphertextLen-16-16, &dec_key, iv, AES_DECRYPT);
+
+
+                // CREATE HMAC HASH
+                unsigned int decryptedLen = strlen(decrypted);
+                
+                char messageHash[SHA256_DIGEST_LENGTH];
+
+                SHA256(decrypted, decryptedLen, messageHash);
+
+                char secretMessageMix[SHA256_DIGEST_LENGTH];
+
+                for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+                    secretMessageMix[i] = (messageHash[i] ^ secretHash[i]);
+                }
+
+                char hmacHash[SHA256_DIGEST_LENGTH];
+
+                SHA256(secretMessageMix, SHA256_DIGEST_LENGTH, hmacHash);
+
+
+                // CHECK HMAC
+                if (memcmp(ciphertextBuff, hmacHash, 16) == 0) {
+                    printf("\n\n    -= Message HMAC Validated =-\n\n");
+                } else {
+                    printf("\n\n    != Message HMAC Invalid (Tampered Message) =!\n\n");
+                }
 
                 // PRINT DECRYPTED MESSAGE
-                printf("\n\n    > Decrypted message: %s\n\n", decrypted);
+                printf("\n    > Decrypted message: %s\n\n", decrypted);
 
 
             } else {
@@ -290,6 +382,10 @@ int main() {
             };
 
 
+        } else {
+
+            // INVALID OPERATION NOTICE
+            printf("\n    <!> Invalid Operation\n\n");
         }
 
 
