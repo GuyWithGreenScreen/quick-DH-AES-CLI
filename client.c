@@ -77,6 +77,38 @@ void hexStringToUCharArr(unsigned char *hexString, unsigned char *output, unsign
     }
 }
 
+void getHMAC(char *hashedSecret, char *message, unsigned int messageLen, char *output) {
+    char inner[SHA256_DIGEST_LENGTH];
+    char HMAC[SHA256_DIGEST_LENGTH];
+    
+
+    char messageHash[SHA256_DIGEST_LENGTH];
+
+    SHA256(message, messageLen, messageHash);
+
+
+    char innerMix[SHA256_DIGEST_LENGTH];
+
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        innerMix[i] = (hashedSecret[i] ^ 0x36) | messageHash[i];
+    }
+
+    SHA256(innerMix, SHA256_DIGEST_LENGTH, inner);
+
+
+    char outerMix[SHA256_DIGEST_LENGTH];
+
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        outerMix[i] = (hashedSecret[i] ^ 0x5c) | inner[i];
+    }
+
+
+    SHA256(outerMix, SHA256_DIGEST_LENGTH, HMAC);
+
+
+    memcpy(output, HMAC, SHA256_DIGEST_LENGTH);
+}
+
 
 int main() {
 
@@ -231,20 +263,6 @@ int main() {
             RAND_bytes((unsigned char *)message+messageLen+1, blockSize-(messageLen+1));
 
 
-            // CREATE HMAC HASH
-            char messageHash[SHA256_DIGEST_LENGTH];
-
-            SHA256(message, messageLen, messageHash);
-
-            char secretMessageMix[SHA256_DIGEST_LENGTH];
-
-            for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-                secretMessageMix[i] = (messageHash[i] ^ secretHash[i]);
-            }
-
-            char hmacHash[SHA256_DIGEST_LENGTH];
-
-            SHA256(secretMessageMix, SHA256_DIGEST_LENGTH, hmacHash);
 
 
 
@@ -262,8 +280,6 @@ int main() {
             if (ciphertext == NULL) {printf("Malloc Fail While Sending Message\n"); return -1;}
 
 
-            // COPY HMAC INTO START OF CIPHER TEXT
-            memcpy(ciphertext, hmacHash, 16);
 
             // COPY IV INTO CIPHER TEXT
             memcpy(ciphertext+16, iv, 16);
@@ -277,6 +293,16 @@ int main() {
 
             // ENCRYPT
             AES_cbc_encrypt((const unsigned char *) message, ciphertext+16+16, blockSize, &enc_key, iv, AES_ENCRYPT);
+
+            
+            // CREATE HMAC HASH
+            char HMAC[SHA256_DIGEST_LENGTH];
+
+            getHMAC(secretHash, ciphertext+16, ciphertextSize-16, HMAC);
+
+
+            // COPY HMAC INTO START OF CIPHER TEXT
+            memcpy(ciphertext, HMAC, 16);
 
 
             // PRINT CIPHER TEXT
@@ -305,7 +331,7 @@ int main() {
             unsigned int ciphertextLen = strlen((char *)ciphertextHEXBuff)/2;
 
             // CHECK IF CIPHERTEXT HAS VALID SIZE
-            if (ciphertextLen % 16 == 0) {
+            if (ciphertextLen % 16 == 0 && ciphertextLen*2 > 32) {
 
                 // ALLOCATE AND FILL CIPHERTEXT BYTE BUFFER
                 unsigned char *ciphertextBuff = malloc(ciphertextLen);
@@ -330,6 +356,12 @@ int main() {
                 memcpy(iv, ciphertextBuff+16, 16);
                 
 
+                // CREATE HMAC HASH
+                char HMAC[SHA256_DIGEST_LENGTH];
+
+                getHMAC(secretHash, ciphertextBuff+16, ciphertextLen-16, HMAC);
+
+
                 // CREATE DECRYPTED OBJECT
                 unsigned char *decrypted = malloc(ciphertextLen-16-16);
 
@@ -346,26 +378,10 @@ int main() {
                 AES_cbc_encrypt(ciphertext, decrypted, ciphertextLen-16-16, &dec_key, iv, AES_DECRYPT);
 
 
-                // CREATE HMAC HASH
-                unsigned int decryptedLen = strlen(decrypted);
                 
-                char messageHash[SHA256_DIGEST_LENGTH];
-
-                SHA256(decrypted, decryptedLen, messageHash);
-
-                char secretMessageMix[SHA256_DIGEST_LENGTH];
-
-                for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-                    secretMessageMix[i] = (messageHash[i] ^ secretHash[i]);
-                }
-
-                char hmacHash[SHA256_DIGEST_LENGTH];
-
-                SHA256(secretMessageMix, SHA256_DIGEST_LENGTH, hmacHash);
-
 
                 // CHECK HMAC
-                if (memcmp(ciphertextBuff, hmacHash, 16) == 0) {
+                if (memcmp(ciphertextBuff, HMAC, 16) == 0) {
                     printf("\n\n    -= Message HMAC Validated =-\n\n");
                 } else {
                     printf("\n\n    != Message HMAC Invalid (Tampered Message) =!\n\n");
